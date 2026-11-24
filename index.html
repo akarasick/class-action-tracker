@@ -6,47 +6,170 @@
   <title>Class Action Claims Tracker</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #1f2937; }
-    .meta { color: #6b7280; font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .bar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; background: #f9fafb; padding: 0.75rem; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 1rem; }
+    .meta { color: #6b7280; font-size: 0.9rem; margin-bottom: 1rem; }
     .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; }
     .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; background: #eff6ff; color: #1d4ed8; }
+    .actions { margin-top: 0.75rem; display: flex; gap: 0.4rem; flex-wrap: wrap; }
+    button { cursor: pointer; padding: 0.3rem 0.65rem; border-radius: 6px; border: 1px solid #d1d5db; background: #fff; }
   </style>
 </head>
 <body>
   <h1>Class Action Claims Tracker</h1>
-  <div id="meta" class="meta">Loading feed...</div>
+  <div class="bar">
+    <input id="owner" placeholder="GitHub username" />
+    <input id="repo" placeholder="Repo name" value="class-action-tracker" />
+    <input id="token" type="password" placeholder="Fine-grained token" />
+    <button id="saveCfg">Save Settings</button>
+    <span id="syncStatus" style="font-size:0.85rem;color:#6b7280;"></span>
+  </div>
+  <div id="meta" class="meta">Loading...</div>
   <div id="list"></div>
+
   <script>
-    async function loadClaims() {
-      const [feedRes, stateRes] = await Promise.all([
-        fetch("data/claims_feed.json?t=" + Date.now()),
-        fetch("data/my_claims_state.json?t=" + Date.now())
-      ]);
-      const feed = await feedRes.json();
-      const state = await stateRes.json();
+    const CFG_KEY = "cat_cfg_v1";
+    let stateData = {};
+    let stateSha = null;
 
-      document.getElementById("meta").textContent =
-        `Last updated: ${feed.last_updated || "Never"} · Total claims: ${(feed.claims || []).length}`;
+    function getCfg() {
+      return JSON.parse(localStorage.getItem(CFG_KEY) || "{}");
+    }
 
-      const list = document.getElementById("list");
-      if (!feed.claims || feed.claims.length === 0) {
-        list.innerHTML = "<p>No claims in <code>data/claims_feed.json</code> yet. Add items or connect your source in <code>scripts/fetch_claims.py</code>.</p>";
+    function bindCfg() {
+      const cfg = getCfg();
+      if (cfg.owner) document.getElementById("owner").value = cfg.owner;
+      if (cfg.repo) document.getElementById("repo").value = cfg.repo;
+      if (cfg.token) document.getElementById("token").value = cfg.token;
+
+      document.getElementById("saveCfg").onclick = () => {
+        localStorage.setItem(CFG_KEY, JSON.stringify({
+          owner: document.getElementById("owner").value.trim(),
+          repo: document.getElementById("repo").value.trim(),
+          token: document.getElementById("token").value.trim()
+        }));
+        document.getElementById("syncStatus").textContent = "Saved locally.";
+      };
+    }
+
+    function toBase64Utf8(str) {
+      const bytes = new TextEncoder().encode(str);
+      let bin = "";
+      bytes.forEach((b) => (bin += String.fromCharCode(b)));
+      return btoa(bin);
+    }
+
+    function fromBase64Utf8(b64) {
+      const bin = atob(b64.replace(/\n/g, ""));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new TextDecoder().decode(bytes);
+    }
+
+    async function loadStateFromGitHub(cfg) {
+      if (!cfg.owner || !cfg.repo || !cfg.token) {
+        const res = await fetch("data/my_claims_state.json?t=" + Date.now());
+        stateData = await res.json();
         return;
       }
+      const url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/data/my_claims_state.json?ref=main`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${cfg.token}`, Accept: "application/vnd.github+json" }
+      });
+      if (!res.ok) throw new Error("Failed to read state from GitHub (" + res.status + ")");
+      const file = await res.json();
+      stateSha = file.sha;
+      stateData = JSON.parse(fromBase64Utf8(file.content));
+    }
 
-      list.innerHTML = feed.claims.map((c) => {
-        const st = (state[c.id] && state[c.id].status) || "unseen";
+    async function saveStateToGitHub() {
+      const cfg = getCfg();
+      if (!cfg.owner || !cfg.repo || !cfg.token) {
+        document.getElementById("syncStatus").textContent = "Add owner + token first.";
+        return;
+      }
+      document.getElementById("syncStatus").textContent = "Saving...";
+      const url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/data/my_claims_state.json`;
+      const body = {
+        message: "chore: update claim tracking state",
+        content: toBase64Utf8(JSON.stringify(stateData, null, 2) + "\n"),
+        branch: "main"
+      };
+      if (stateSha) body.sha = stateSha;
+
+      const res = await fetch(url, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${cfg.token}`,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error("Save failed (" + res.status + ")");
+      const updated = await res.json();
+      stateSha = updated.content.sha;
+      document.getElementById("syncStatus").textContent = "Saved to GitHub.";
+    }
+
+    async function setStatus(claimId, status) {
+      let extra = {};
+      if (status === "submitted") {
+        const conf = prompt("Confirmation / claim ID (optional):", stateData[claimId]?.confirmation_id || "");
+        if (conf !== null) extra.confirmation_id = conf.trim();
+        extra.submitted_at = new Date().toISOString();
+      }
+      stateData[claimId] = {
+        ...(stateData[claimId] || {}),
+        status,
+        seen_at: stateData[claimId]?.seen_at || new Date().toISOString(),
+        ...extra
+      };
+      renderList(window._claims || []);
+      await saveStateToGitHub();
+    }
+
+    function renderList(claims) {
+      const list = document.getElementById("list");
+      if (!claims.length) {
+        list.innerHTML = "<p>No claims yet. Add claims to <code>data/claims_feed.json</code> or wire your fetcher.</p>";
+        return;
+      }
+      list.innerHTML = claims.map((c) => {
+        const entry = stateData[c.id] || {};
+        const st = entry.status || "unseen";
         return `
           <div class="card">
             <span class="badge">${st}</span>
             <h3>${c.title || c.id}</h3>
             <p>${c.eligibility_summary || ""}</p>
-            <small>Deadline: ${c.claim_deadline || "N/A"}</small>
+            <small>Deadline: ${c.claim_deadline || "N/A"}${entry.confirmation_id ? " · Conf: " + entry.confirmation_id : ""}</small>
+            <div class="actions">
+              <button onclick="setStatus('${c.id}', 'seen')">Mark Seen</button>
+              <button onclick="setStatus('${c.id}', 'submitted')">Mark Submitted</button>
+              <button onclick="setStatus('${c.id}', 'paid')">Mark Paid</button>
+              <button onclick="setStatus('${c.id}', 'skipped')">Skip</button>
+            </div>
           </div>
         `;
       }).join("");
     }
-    loadClaims().catch((err) => {
-      document.getElementById("meta").textContent = "Error loading data: " + err.message;
+
+    async function init() {
+      bindCfg();
+      const cfg = getCfg();
+      const [feedRes] = await Promise.all([
+        fetch("data/claims_feed.json?t=" + Date.now()),
+        loadStateFromGitHub(cfg)
+      ]);
+      const feed = await feedRes.json();
+      window._claims = feed.claims || [];
+      document.getElementById("meta").textContent =
+        `Last updated: ${feed.last_updated || "Never"} · Total claims: ${window._claims.length}`;
+      renderList(window._claims);
+    }
+
+    init().catch((err) => {
+      document.getElementById("meta").textContent = "Error: " + err.message;
     });
   </script>
 </body>
