@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Class Action Claims Tracker</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #1f2937; }
+    .meta { color: #6b7280; font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; }
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; background: #eff6ff; color: #1d4ed8; }
+  </style>
+</head>
+<body>
+  <h1>Class Action Claims Tracker</h1>
+  <div id="meta" class="meta">Loading feed...</div>
+  <div id="list"></div>
+  <script>
+    async function loadClaims() {
+      const [feedRes, stateRes] = await Promise.all([
+        fetch("data/claims_feed.json?t=" + Date.now()),
+        fetch("data/my_claims_state.json?t=" + Date.now())
+      ]);
+      const feed = await feedRes.json();
+      const state = await stateRes.json();
+
+      document.getElementById("meta").textContent =
+        `Last updated: ${feed.last_updated || "Never"} · Total claims: ${(feed.claims || []).length}`;
+
+      const list = document.getElementById("list");
+      if (!feed.claims || feed.claims.length === 0) {
+        list.innerHTML = "<p>No claims in <code>data/claims_feed.json</code> yet. Add items or connect your source in <code>scripts/fetch_claims.py</code>.</p>";
+        return;
+      }
+
+      list.innerHTML = feed.claims.map((c) => {
+        const st = (state[c.id] && state[c.id].status) || "unseen";
+        return `
+          <div class="card">
+            <span class="badge">${st}</span>
+            <h3>${c.title || c.id}</h3>
+            <p>${c.eligibility_summary || ""}</p>
+            <small>Deadline: ${c.claim_deadline || "N/A"}</small>
+          </div>
+        `;
+      }).join("");
+    }
+    loadClaims().catch((err) => {
+      document.getElementById("meta").textContent = "Error loading data: " + err.message;
+    });
+  </script>
+</body>
+</html>
