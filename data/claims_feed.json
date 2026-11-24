@@ -1,4 +1,11 @@
 {
   "last_updated": "2026-11-24T21:35:00.879938+00:00",
-  "claims": []
+  "claims": [
+    {
+      "id": "sample-settlement-2026",
+      "title": "Sample Class Action Settlement",
+      "eligibility_summary": "Test record to verify display and status tracking.",
+      "claim_deadline": "2027-02-01"
+    }
+  ]
 }
